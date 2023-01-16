@@ -1,0 +1,263 @@
+---
+title: "checkm results table"
+author: "Alba Troci"
+date: "`r Sys.Date()`"  
+output:
+   BiocStyle::html_document:
+      toc: true
+      df_print: paged
+      self_contained: true
+      code_download: true 
+      highlight: tango
+editor_options:
+  chunk_output_type: console
+params:
+  FIGPATH: "figures/"
+  d.out: "./"
+---
+# Preparations
+## Set global options
+
+```{r style, results="asis", cache=FALSE, message = F, echo=FALSE}
+# Set knit global options
+library("knitr")
+options(digits = 2, width = 80)
+golden_ratio <- (1 + sqrt(5)) / 2
+opts_chunk$set(echo = TRUE,
+               tidy = FALSE,
+               include = TRUE,
+               fig.path = params$FIGPATH,
+               dev=c("png",'pdf'),
+               fig.height = 5,
+               fig.width = 4 * golden_ratio,
+               comment = '  ',
+               dpi = 300,
+               cache = FALSE)
+
+
+# Pretty outputs
+library("rmarkdown")
+library("BiocStyle")
+library("ggthemes") # add ggplot2 themes
+library("ggplot2")
+library("ggpubr")
+
+# Set seed for reproducibility
+set.seed(100)
+
+# Set plotting theme
+theme_set(theme_few(base_size = 14))
+
+# Set output directory
+d.out <- params$d.out
+rm(params)
+```
+
+
+## Load libraries for the session
+```{r libraries, message=FALSE}
+library("magrittr")
+library("ggplot2")
+library("tidyverse")
+library("readxl")
+library("dada2")
+library("phyloseq")
+library("gridExtra")
+library("vegan")
+library("plyr")
+library("scales")
+library("reshape2")
+library("DESeq2")
+library("dplyr") #for data manipulation
+library("msa") #multiple sequence alignment
+library("ape") #to create phylogenetic tree
+library("randomForest") 
+library("caret") 
+library("broom")
+library("mlbench")
+library("plotROC")
+library("car")
+library("MASS")
+library("lme4")
+library("lmerTest")
+library("fitdistrplus")
+library("psycho")
+
+library("rstatix")
+library("coin")
+library("stringr")
+library("rio")
+
+
+```
+
+Import all correlation tables obtain from correlation analysis (see script 5.) for all brain scores included in the final analysis.
+
+```{r}
+library("readxl")
+##AD+MCI all
+
+#biomarkers
+corr1 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.ptau.A42.xlsx")
+corr2 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.ptau.xlsx")
+corr3 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.tau.xlsx")
+
+corr4 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.crp2.xlsx")
+
+
+
+## severity scores
+
+corr10 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.severity.xlsx")
+
+corr11 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/ad.mci.lm.nps.xlsx")
+
+
+## image data
+
+corr20 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/9.corr.analysis/all.ad.mci/lmer/volum/mta.lm.taxa.xlsx")
+
+```
+
+
+```{r}
+#bind corr from ad and mci
+
+corr.fin <- rbind(corr1, corr2, corr3, corr4, corr10, corr11, corr20)
+```
+
+```{r}
+corr.fin2 <- corr.fin[!(corr.fin$Covariate %in% c("Alter", "Geschlecht")), ]
+
+```
+
+```{r}
+corr.fin3 <- corr.fin2[(corr.fin2$P.adj.fdr < 0.05), ]
+```
+
+
+
+add significant ASVs from differential abundance testing for AD 
+```{r}
+significant.asv1 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/7.diff.abundance/status/ad.vs.hc.xlsx")
+significant.asv1$Status <- "AD"
+significant.asv1$Significance <- "AD"
+
+significant.asv2 <- read_excel("/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/7.diff.abundance/status/mci.vs.hc.xlsx")
+significant.asv2$Significance <- "MCI"
+
+significant.asv2$Status <- "MCI"
+```
+
+```{r}
+significant.asv <- rbind(significant.asv1, significant.asv2)
+```
+
+  
+subset from correlation table only significant ASVs
+
+```{r}
+corr132 <- corr.fin2[(corr.fin2$Genomes %in% significant.asv$ASV), ]
+corr133 <- corr132
+```
+
+select ASV to plot
+```{r}
+corr0 <- corr133[(corr133$t.value > 2.4 | corr133$t.value < -2), ]
+corr <- rbind(corr.fin3, corr0)
+
+corr <- corr[!duplicated(corr), ]
+length(unique(corr$Genomes))
+
+colnames(corr)[colnames(corr) %in% "Genomes"] <- "ASV"
+```
+
+subset big table to selected ASVs
+```{r}
+tab <- corr.fin2[(corr.fin2$Genomes %in% corr$ASV), ]
+tab$ASV1 <- tab$Genomes
+tab$Genus1 <- tab$Genus
+
+tab12 <- tab %>% unite("Taxonomy", ASV1:Genus1, sep="_", remove=TRUE)
+```
+
+
+prepare right annotation for the plot
+```{r}
+h <- tab12[, c("Taxonomy", "Phylum")]
+h22 <- h[!duplicated(h$Taxonomy), ]
+```
+
+
+I want to build the heatmap on the ready computed spearman correlation
+```{r}
+tab13 <- tab12[, c("Taxonomy", "Measure", "t.value")]
+tab13.no.dup <- tab13[!duplicated(tab13), ]
+```
+
+```{r}
+genome10 <- tab13.no.dup %>%
+  pivot_wider(names_from = Measure, values_from = t.value)
+
+genome1 <- na.omit(genome10)
+
+```
+
+```{r}
+#subset h22, remove asv with na values from genome10 table
+h2 <- h22[(h22$Taxonomy %in% genome1$Taxonomy), ]
+```
+
+```{r}
+genome11 <- genome1 %>% column_to_rownames(var="Taxonomy")
+
+#genome111 <- genome11[, c("ptau/Aß42", "ptau", "Amyloidß42","MOCA", "BNT", "MTA", "GrayVolume","Cerebellum.White.Matter",  "Hippocampus", "Accumbens")]
+
+genome111 <- genome11
+
+genome22 <- as.matrix(genome111)
+
+```
+
+
+```{r}
+heatmap(genome22)
+```
+
+
+
+
+
+Final plot
+```{r}
+library("ComplexHeatmap")
+library("dendsort")
+row_dend = dendsort(hclust(dist(genome22)))
+col_dend = dendsort(hclust(dist(t(genome22))))
+
+row_ha = rowAnnotation(Phylum = h2$Phylum, show_annotation_name = FALSE)
+h3 <- Heatmap(genome22, 
+        name = "t value", #title of legend,
+        right_annotation = row_ha,
+        #row_km = 4,
+        #row_split = 4, column_split = 2,
+        cluster_rows = row_dend, 
+        #cluster_columns = col_dend,
+        cluster_columns = FALSE,
+        row_order = sort(rownames(genome22)),
+        column_title = "Scores", row_title = "Taxa",
+        row_names_gp = gpar(fontsize = 9), # Text size for row names
+        column_names_gp = gpar(fontsize = 9),
+        #show_column_dend = FALSE,
+        column_names_rot = -45,
+        width = unit(7, "cm"), height = unit(14, "cm"),
+        row_names_max_width = max_text_width(rownames(genome22), gp = gpar(fontsize = 14))
+        )
+
+h3
+
+
+```
+
+# Session info
+

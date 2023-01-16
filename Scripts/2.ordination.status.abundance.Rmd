@@ -1,0 +1,376 @@
+---
+title: "Beta diversity + Ordination"
+author: "Alba Troci"
+date: "`r Sys.Date()`"  
+output:
+   #BiocStyle::html_document:
+   html_document:
+     
+     code_folding: hide
+editor_options:
+  chunk_output_type: console
+params:
+  FIGPATH: "figures/"
+  d.out: "./"
+---
+
+# Preparations
+## Set global options
+
+```{r style, results="asis", cache=FALSE, message = F, echo=FALSE}
+# Set knit global options
+library("knitr")
+options(digits = 2, width = 80)
+golden_ratio <- (1 + sqrt(5)) / 2
+opts_chunk$set(echo = TRUE,
+               tidy = FALSE,
+               include = TRUE,
+               fig.path = params$FIGPATH,
+               dev=c("png",'pdf'),
+               fig.height = 5,
+               fig.width = 4 * golden_ratio,
+               comment = '  ',
+               dpi = 300,
+               cache = FALSE)
+  
+
+# Pretty outputs
+library("rmarkdown")
+library("BiocStyle")
+library("ggthemes") # add ggplot2 themes
+library("ggplot2")
+library("ggpubr")
+
+# Set seed for reproducibility
+set.seed(100)
+
+# Set plotting theme
+theme_set(theme_few(base_size = 14))
+
+# Set output directory
+d.out <- params$d.out
+rm(params)
+```
+
+
+## Load libraries for the session
+```{r libraries, message=FALSE}
+library("magrittr")
+library("ggplot2")
+library("tidyverse")
+library("readxl")
+library("dada2")
+library("phyloseq")
+library("gridExtra")
+library("vegan")
+library("plyr")
+library("scales")
+library("reshape2")
+library("DESeq2")
+library("dplyr") #for data manipulation
+library("msa") #multiple sequence alignment
+library("ape") #to create phylogenetic tree
+library("randomForest") 
+library("caret") 
+library("broom")
+library("mlbench")
+library("plotROC")
+library("gg3D")
+library("scatterplot3d")
+library("car")
+library("rgl")
+library("rglwidget")
+
+```
+
+# Import files
+
+Phyloseq object AD filtered samples
+```{r}
+# Phyloseq object AD filtered samples
+d.ps.filter.ad.st <- "/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/4.filter"
+ps.filter.ad.st <- "/ps.filter.ad.stool.abundance.rds" %>%
+  paste0(d.ps.filter.ad.st,"/", .) %>% 
+  readRDS() 
+ps.filter.ad.st
+
+ps.st <- ps.filter.ad.st
+
+```
+
+## Edit
+
+Subset Group = c("Controls", "Disease", "Risiko")
+
+```{r, results= 'hide'}
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Controls"])
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Disease"])
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Risiko"])
+```
+
+```{r}
+#add one column for category
+sample_data(ps.st)$Group <- as.character(sample_data(ps.st)$Group)
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "AD"] <- "AD"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "MCI"] <- "MCI"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Risiko" ] <- "Risiko"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Controls" ] <- "HC"
+
+```
+
+```{r}
+ps.dc <- subset_samples(ps.st, Group %in% c("Disease", "Controls", "Risiko"))
+ps.dc
+
+sam <- data.frame(sample_data(ps.dc))
+
+```
+
+# Beta diversity
+
+  * How different is the microbial composition in one environment compared to another?
+  * We compute the dissimilarity matrix using one of the appropriate distances for microbiome data: Bray-Curtis.
+    
+  
+
+## Distance matrix
+```{r}
+#Bray-Curtis for ST samples:
+bray_dist = phyloseq::distance(ps.dc, method="bray", weighted=T)
+```
+
+```{r, results='hide'}
+o.outlier <- outlier(as.matrix(bray_dist),thresh=-2.8,y=0.5)
+o.outlier                                    
+plot(o.outlier) 
+
+```
+
+```{r, results='hide'}
+ps.dc2 <- ps.dc
+```
+
+
+# Ordination
+Measures the similarity of the samples and projects this measure into 2-dimensions.
+
+## NMDS 
+**Stress**: value representing the difference between distance in the reduced dimension compared to the complete multidimensional space.
+
+**NMDS**: tries to minimize the stress value using gradient decent.
+
+
+```{r, out.width="60%" , warning=FALSE, message=FALSE}
+
+# Plot NMDS: using bray distances by defult. 
+ordination2 <- ordinate(ps.dc2, method = "NMDS" )
+ordination2
+
+#Add centroids
+NMDS1 <- ordination2$points[,1]
+NMDS2 <- ordination2$points[,2]
+
+Status <- sample_data(ps.dc2)$Status
+df <- data.frame(Status, NMDS1, NMDS2)
+centroids <- aggregate(cbind(NMDS1, NMDS2)~Status,df,mean)
+centroids
+
+p1 <- plot_ordination(ps.dc2, ordination2, color="Status") + geom_point(size = 0.6) + 
+      theme(text = element_text(size = 10),aspect.ratio=1) +
+      scale_color_brewer(palette = "Set1")
+      #scale_colour_manual(values = cols) 
+
+p2 <- p1 + stat_ellipse()+ geom_point(data=centroids,size=3)
+p2
+
+```
+
+```{r}
+segs <- merge(df, setNames(centroids, c('Status','oNMDS1','oNMDS2')),
+              by = 'Status', sort = FALSE)
+
+p22 <- ggplot(df, aes(x = NMDS1, y = NMDS2, colour = Status)) +
+  geom_segment(data = segs,
+               mapping = aes(xend = oNMDS1, yend = oNMDS2)) + # spiders
+  geom_point(data = centroids, size = 3) +                         # centroids
+  geom_point()+                                          # sample scores
+  scale_color_brewer(palette = "Set1")
+  
+p22
+
+```
+
+```{r, out.width="60%"}
+oo <- ggscatterhist(
+ df, x = "NMDS1", y = "NMDS2",
+ color = "Status", size = 0.9, alpha = 1,
+ palette = "Set1",
+ #palette = c("#00AFBB", "#E7B800", "#FC4E07","#E7B800","#E7B800"),
+ #palette = c("#61864B","#C46226","#B58216","#8B813D","#736956"),
+ margin.plot = "boxplot",
+ #ggtheme = theme_bw()
+ ggtheme = theme(text = element_text(size = 10))
+)
+oo
+
+fig <- oo
+
+ggsave("status.ord.abundance.png")
+
+```
+
+
+
+## Multivariate homogeneity of group dispersion
+
+NOTE: PERMANOVA, like all statistical tests, has certain assumptions about sampling variability. While it does not assume normality, it DOES assume equal beta dispersion between groups. SO, if your "betadisper" test (see below) shows that your groups have significantly different dispersions, you should use ANOSIM rather than PERMANOVA to look at mean differences between groups in beta diversity space.
+
+Sometimes it will be clear from NMDS that one group tends to vary more (be more spread out) than another group. We can test this statistically with multivariate homogeneity of group dispersion (variances).
+
+```{r}
+#Bray-Curtis for ST samples:
+bray_dist.merge1 = phyloseq::distance(ps.dc2, method="bray", weighted=T)
+```
+
+```{r}
+#Calculate dispersion (variances) within each group.
+disp.group = betadisper(bray_dist.merge1, sample_data(ps.dc2)$Status)
+#Perform an ANOVA-like test to determine if the variances differ by groups.
+permutest(disp.group, pairwise=TRUE, permutations=1000)
+```
+
+Comment: betadisper function does not show significant differences between Groups, therefore we will use Permanova test.
+
+
+
+## Multivariate: Permanova
+
+**Aim**: test of differences in microbial composition between 2 or more groups of samples.
+
+**Method**: PERMANOVA
+
+**Hypothesis testing**: centroids of Group clusters differ.
+
+**Statistics**: test for simmilarity based on a chosen distance (here Bray-Curtis).
+
+
+Separate groups
+
+```{r}
+ps1 <- subset_samples(ps.dc2, Status %in% c("AD", "HC"))
+ps2 <- subset_samples(ps.dc2, Status %in% c("MCI", "HC"))
+ps3 <- subset_samples(ps.dc2, Status %in% c("Risiko", "HC"))
+ps4 <- subset_samples(ps.dc2, Status %in% c("Risiko", "AD"))
+ps5 <- subset_samples(ps.dc2, Status %in% c("Risiko", "MCI"))
+```
+
+```{r}
+#Bray-Curtis for ST samples:
+bray1 = phyloseq::distance(ps1, method="bray", weighted=T)
+bray2 = phyloseq::distance(ps2, method="bray", weighted=T)
+bray3 = phyloseq::distance(ps3, method="bray", weighted=T)
+bray4 = phyloseq::distance(ps4, method="bray", weighted=T)
+bray5 = phyloseq::distance(ps5, method="bray", weighted=T)
+```
+
+AD vs HC
+```{r}
+permanova1 <- adonis2(bray1 ~ sample_data(ps1)$Status*sample_data(ps1)$Alter)
+permanova1
+```
+
+MCI vs HC
+```{r}
+permanova2 <- adonis2(bray2 ~ sample_data(ps2)$Status*sample_data(ps2)$Alter)
+permanova2
+```
+
+Risiko vs HC
+```{r}
+permanova3 <- adonis2(bray3 ~ sample_data(ps3)$Status*sample_data(ps3)$Alter)
+permanova3
+```
+
+Risiko vs AD
+```{r}
+permanova4 <- adonis2(bray4 ~ sample_data(ps4)$Status*sample_data(ps4)$Alter)
+permanova4
+```
+
+Risiko vs MCI
+```{r}
+permanova5 <- adonis2(bray5 ~ sample_data(ps5)$Status*sample_data(ps5)$Alter)
+permanova5
+```
+
+```{r}
+#tables
+t1 <- data.frame(Test = "Adonis",
+                 Group="AD vs HC",
+                 Distance = "Bray",
+                 Df = permanova1$Df,
+                 SumOfSqs = permanova1$SumOfSqs,
+                 R2= permanova1$R2,
+                 F=permanova1$F,
+                 Pvalue=permanova1$`Pr(>F)`)
+```
+
+```{r}
+#tables
+t2 <- data.frame(Test = "Adonis",
+                 Group="MCI vs HC",
+                 Distance = "Bray",
+                 Df = permanova2$Df,
+                 SumOfSqs = permanova2$SumOfSqs,
+                 R2= permanova2$R2,
+                 F=permanova2$F,
+                 Pvalue=permanova2$`Pr(>F)`)
+```
+
+```{r}
+#tables
+t3 <- data.frame(Test = "Adonis",
+                 Group="Risiko vs HC",
+                 Distance = "Bray",
+                 Df = permanova3$Df,
+                 SumOfSqs = permanova3$SumOfSqs,
+                 R2= permanova3$R2,
+                 F=permanova3$F,
+                 Pvalue=permanova3$`Pr(>F)`)
+```
+
+```{r}
+#tables
+t4 <- data.frame(Test = "Adonis",
+                 Group="Risiko vs AD",
+                 Distance = "Bray",
+                 Df = permanova4$Df,
+                 SumOfSqs = permanova4$SumOfSqs,
+                 R2= permanova4$R2,
+                 F=permanova4$F,
+                 Pvalue=permanova4$`Pr(>F)`)
+```
+
+```{r}
+#tables
+t5 <- data.frame(Test = "Adonis",
+                 Group="Risiko vs MCI",
+                 Distance = "Bray",
+                 Df = permanova5$Df,
+                 SumOfSqs = permanova5$SumOfSqs,
+                 R2= permanova5$R2,
+                 F=permanova5$F,
+                 Pvalue=permanova5$`Pr(>F)`)
+```
+
+```{r}
+#merge tables
+
+anosim <- rbind(t1, t2, t3, t4, t5)
+library("rio")
+
+export(anosim, "Status.ordination.abundance.xlsx")
+
+```
+
+# Session info

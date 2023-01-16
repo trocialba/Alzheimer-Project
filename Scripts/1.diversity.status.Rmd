@@ -1,0 +1,548 @@
+---
+title: "Diversity Analysis:(AD+MCI) vs HC stool"
+author: "Alba Troci"
+date: "`r Sys.Date()`"  
+output:
+   #BiocStyle::html_document:
+   html_document:
+     code_folding: hide
+editor_options:
+  chunk_output_type: console
+params:
+  FIGPATH: "figures/"
+  d.out: "./"
+---
+
+# Preparations
+## Set global options
+
+```{r style, results="asis", cache=FALSE, message = F, echo=FALSE}
+# Set knit global options
+library("knitr")
+options(digits = 2, width = 80)
+golden_ratio <- (1 + sqrt(5)) / 2
+opts_chunk$set(echo = TRUE,
+               tidy = FALSE,
+               include = TRUE,
+               fig.path = params$FIGPATH,
+               dev=c("png",'pdf'),
+               fig.height = 5,
+               fig.width = 4 * golden_ratio,
+               comment = '  ',
+               dpi = 300,
+               cache = FALSE)
+
+
+# Pretty outputs
+library("rmarkdown")
+library("BiocStyle")
+library("ggthemes") # add ggplot2 themes
+library("ggplot2")
+library("ggpubr")
+
+# Set seed for reproducibility
+set.seed(100)
+
+# Set plotting theme
+theme_set(theme_few(base_size = 14))
+
+# Set output directory
+d.out <- params$d.out
+rm(params)
+```
+
+
+## Load libraries for the session
+```{r libraries, message=FALSE}
+library("magrittr")
+library("ggplot2")
+library("tidyverse")
+library("readxl")
+library("dada2")
+library("phyloseq")
+library("gridExtra")
+library("vegan")
+library("plyr")
+library("scales")
+library("reshape2")
+library("DESeq2")
+library("dplyr") #for data manipulation
+library("msa") #multiple sequence alignment
+library("ape") #to create phylogenetic tree
+library("randomForest") 
+library("caret") 
+library("broom")
+library("mlbench")
+library("plotROC")
+library("car")
+library("MASS")
+library("lme4")
+library("lmerTest")
+library("fitdistrplus")
+library("psycho")
+library("rstatix")
+library("coin")
+library("plotROC")
+library("gg3D")
+library("scatterplot3d")
+library("car")
+library("rgl")
+library("rglwidget")
+library("rstatix")
+library("coin")
+library("compareGroups")
+
+```
+## Import data: no agglomeration
+
+I have filtered out ASV with prevalence less than 5% in all samples
+```{r}
+# Phyloseq object AD filtered samples
+d.ps.filter.ad.st <- "/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/4.filter"
+ps.filter.ad.st <- "/ps.filter.ad.stool.abundance.rds" %>%
+  paste0(d.ps.filter.ad.st,"/", .) %>% 
+  readRDS() 
+ps.filter.ad.st
+
+ps.st <- ps.filter.ad.st
+
+```
+
+## Edit
+```{r}
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Controls"])
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Disease"])
+dim(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Risiko"])
+```
+
+```{r}
+#add one column for category
+sample_data(ps.st)$Group <- as.character(sample_data(ps.st)$Group)
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "AD"] <- "AD"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "MCI"] <- "MCI"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Risiko" ] <- "Risiko"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Controls" ] <- "HC"
+
+```
+
+```{r}
+l <- data.frame(sample_data(ps.st))
+```
+
+```{r}
+l$ADMB_ID1 <- l$ADMB_ID
+
+l1 <- l %>% separate(ADMB_ID1, c("a", "b", "c"))
+
+```
+
+```{r}
+l2 <- l1 %>% unite("ADMB_ID2", a:b)
+```
+
+```{r}
+l3 <- l2[!duplicated(l2$ADMB_ID2), ]
+```
+
+```{r}
+l4 <- l2[duplicated(l2$ADMB_ID2), ]
+```
+
+```{r}
+ps.dc <- subset_samples(ps.st, Group %in% c("Disease", "Controls", "Risiko"))
+ps.dc
+```
+
+
+# Alpha diversity
+- Shannon: How difficult it is to predict the identity of a randomly chosen individual.
+- Simpson: The probability that two randomly chosen individuals are the same species.
+- Chao1: Estimate diversity from abundance data (importance of rare OTUs)
+
+## Rarefaction: no agglomeration
+
+We need to rarefy before alpha diversity
+
+```{r}
+# We will subsample to the min number of reads
+ps.rar <- rarefy_even_depth(ps.dc, sample.size = min(sample_sums(ps.dc)))
+ps.rar
+
+```
+
+
+# Calculate alpha diversity and plot 
+
+```{r}
+#Diversity values in one table only
+rich <- estimate_richness(ps.rar, measures = c("Shannon", "Chao1"))
+head(rich)
+
+```
+
+Prepare table
+```{r}
+df <- cbind(sample_data(ps.rar), rich)
+```
+
+```{r}
+df1 <- df[which(df$Status %in% c("AD", "HC")), ]
+df2 <- df[which(df$Status %in% c("MCI", "HC")), ]
+df3 <- df[which(df$Status %in% c("Risiko", "HC")), ]
+df4 <- df[which(df$Status %in% c("Risiko", "AD")), ]
+df5 <- df[which(df$Status %in% c("Risiko", "MCI")), ]
+```
+
+## Plot
+
+```{r}
+df55 <- df[c("Chao1", "Status")]
+df55$Value <- df55$Chao1
+df55$Measure <- "Chao1"
+df55$Chao1 <- NULL
+
+df66 <- df[c("Shannon", "Status")]
+df66$Value <- df66$Shannon
+df66$Measure <- "Shannon"
+df66$Shannon <- NULL
+
+df77 <- rbind(df55, df66)
+
+```
+
+```{r}
+theme_set(theme_bw())
+p <- ggplot(df77, aes(x=Status, y=Value, color=Status)) + 
+  geom_boxplot(alpha = 2, na.rm = TRUE, outlier.size = 0)+ 
+                        theme(text = element_text(size = 12)) +
+                        scale_colour_brewer(palette = "Set1") +
+                        labs(y="Alpha diversity measure", x = "Status")+
+  scale_y_continuous(expand = expansion(mult = c(0, 0.6)))
+
+hd <- p  + facet_wrap(~Measure, scale="free")
+hd 
+#ggsave("alpha.status.ad1.abundance.png")
+```
+  
+## Statistics (Chao1 ~ Status)
+
+AD vs HC
+```{r}
+#normality
+shapiro.test(df1$Chao1)
+
+#chao1
+t1 <- t.test(Chao1 ~ Status, data = df1,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+t1
+
+effect1 <- df1 %>% cohens_d(Chao1 ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect1
+
+```
+
+```{r}
+#create tabl values
+
+t1.Chao1 <- data.frame(Status = "AD vs HC", 
+                 DataName = t1$data.name,
+                 Method = t1$method,
+                 n1 = effect1$n1, n2 = effect1$n2, 
+                 Statistic = t1$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect1$effsize,
+                 Pvalue = t1$p.value)
+```
+
+
+MCI vs HC
+```{r}
+#normality
+shapiro.test(df2$Chao1)
+
+#chao1
+t2 <- t.test(Chao1 ~ Status, data = df2,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+t2
+
+effect2 <- df2 %>% cohens_d(Chao1 ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect2
+
+```
+
+```{r}
+#create tabl values
+
+t2.Chao1 <- data.frame(Status = "HC vs MCI", 
+                 DataName = t2$data.name,
+                 Method = t2$method,
+                 n1 = effect2$n1, n2 = effect2$n2, 
+                 Statistic = t2$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect2$effsize,
+                 Pvalue = t2$p.value)
+```
+
+
+Risiko vs HC
+```{r}
+#normality
+shapiro.test(df3$Chao1)
+
+#chao1
+t3 <- t.test(Chao1 ~ Status, data = df3, conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+t3
+
+effect3 <- df3 %>% cohens_d(Chao1 ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect3
+
+```
+
+```{r}
+#create tabl values
+
+t3.Chao1 <- data.frame(Status = "HC vs Risiko", 
+                 DataName = t3$data.name,
+                 Method = t3$method,
+                 n1 = effect3$n1, n2 = effect3$n2, 
+                 Statistic = t3$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect3$effsize,
+                 Pvalue = t3$p.value)
+```
+
+Risiko vs AD
+```{r}
+#normality
+shapiro.test(df4$Chao1)
+
+#chao1
+t4 <- t.test(Chao1 ~ Status, data = df4, conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+t4
+
+effect4 <- df4 %>% cohens_d(Chao1 ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect4
+
+```
+
+```{r}
+#create tabl values
+
+t4.Chao1 <- data.frame(Status = "AD vs Risiko", 
+                 DataName = t4$data.name,
+                 Method = t4$method,
+                 n1 = effect4$n1, n2 = effect4$n2,  
+                 Statistic = t4$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect4$effsize,
+                 Pvalue = t4$p.value)
+```
+
+Risiko vs MCI
+```{r}
+#normality
+shapiro.test(df5$Chao1)
+
+#chao1
+t5 <- t.test(Chao1 ~ Status, data = df5, conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+t5
+
+effect5 <- df5 %>% cohens_d(Chao1 ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect5
+
+```
+
+```{r}
+#create tabl values
+
+t5.Chao1 <- data.frame(Status = "MCI vs Risiko", 
+                 DataName = t5$data.name,
+                 Method = t5$method,
+                 n1 = effect5$n1, n2 = effect5$n2, 
+                 Statistic = t5$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect5$effsize,
+                 Pvalue = t5$p.value)
+```
+
+```{r}
+#merge tables
+
+alpha.chao1 <- rbind(t1.Chao1, t2.Chao1, t3.Chao1, t4.Chao1, t5.Chao1 )
+
+```
+
+
+
+
+## Statisctics (Shannon ~ Status)
+
+AD vs HC
+```{r}
+#normality
+shapiro.test(df1$Shannon)
+
+w1 <- wilcox.test(Shannon ~ Status, data = df1,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+w1
+
+effect11 <- df1 %>% cohens_d(Shannon ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect11
+
+```
+
+```{r}
+#create tabl values
+t1.Shannon <- data.frame(Status = "AD vs HC", 
+                 DataName = w1$data.name,
+                 Method = w1$method,
+                 n1 = effect11$n1, n2 = effect11$n2, 
+                 Statistic = w1$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect11$effsize,
+                 Pvalue = w1$p.value)
+```
+
+HC vs MCI
+```{r}
+#normality
+shapiro.test(df2$Shannon)
+
+w2 <- wilcox.test(Shannon ~ Status, data = df2,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+w2
+
+effect12 <- df2 %>% cohens_d(Shannon ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect12
+
+```
+
+```{r}
+#create tabl values
+t2.Shannon <- data.frame(Status = "HC vs MCI", 
+                 DataName = w2$data.name,
+                 Method = w2$method,
+                 n1 = effect12$n1, n2 = effect12$n2, 
+                 Statistic = w2$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect12$effsize,
+                 Pvalue = w2$p.value)
+```
+
+HC vs Risiko
+```{r}
+#normality
+shapiro.test(df3$Shannon)
+
+w3 <- wilcox.test(Shannon ~ Status, data = df3,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+w3
+
+effect13 <- df3 %>% cohens_d(Shannon ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect13
+
+```
+
+```{r}
+#create tabl values
+t3.Shannon <- data.frame(Status = "HC vs Risiko", 
+                 DataName = w3$data.name,
+                 Method = w3$method,
+                 n1 = effect13$n1, n2 = effect13$n2, 
+                 Statistic = w3$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect13$effsize,
+                 Pvalue = w3$p.value)
+```
+
+AD vs Risiko
+```{r}
+#normality
+shapiro.test(df4$Shannon)
+
+w4 <- wilcox.test(Shannon ~ Status, data = df4,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+w4
+
+effect14 <- df4 %>% cohens_d(Shannon ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect14
+
+```
+
+```{r}
+#create tabl values
+t4.Shannon <- data.frame(Status = "AD vs Risiko", 
+                 DataName = w4$data.name,
+                 Method = w4$method,
+                 n1 = effect14$n1, n2 = effect14$n2, 
+                 Statistic = w4$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect14$effsize,
+                 Pvalue = w4$p.value)
+```
+
+
+MCI vs Risiko
+```{r}
+#normality
+shapiro.test(df5$Shannon)
+
+w5 <- wilcox.test(Shannon ~ Status, data = df5,conf.int=TRUE,
+       p.adjust.methods = "fdr",var.equal = TRUE)
+w5
+
+effect15 <- df5 %>% cohens_d(Shannon ~ Status, var.equal = TRUE, hedges.correction = TRUE)
+#df %>% wilcox_effsize(Chao1 ~ Status)
+effect15
+
+```
+
+```{r}
+#create tabl values
+t5.Shannon <- data.frame(Status = "MCI vs Risiko", 
+                 DataName = w5$data.name,
+                 Method = w5$method,
+                 n1 = effect15$n1, n2 = effect15$n2, 
+                 Statistic = w5$statistic, 
+                 #df = test12$parameter, 
+                 EffectSize = effect15$effsize,
+                 Pvalue = w5$p.value)
+```
+
+
+```{r}
+#merge tables
+
+alpha.shannon <- rbind(t1.Shannon, t2.Shannon, t3.Shannon, t4.Shannon, t5.Shannon)
+```
+
+```{r}
+alpha <- rbind(alpha.chao1, alpha.shannon)
+```
+
+# save output
+
+```{r}
+library("rio")
+
+export(alpha, "alpha.status.ad1.abundance.xlsx")
+```
+
+
+
+
+# Session info
+
+

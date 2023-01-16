@@ -1,0 +1,274 @@
+---
+title: "Correlation between biomarkers and ASV abundance"
+author: "Alba Troci"
+date: "`r Sys.Date()`"  
+output:
+   #BiocStyle::html_document:
+   html_document:
+     
+     code_folding: hide
+editor_options:
+  chunk_output_type: console
+params:
+  FIGPATH: "figures/"
+  d.out: "./"
+---
+
+# Preparations
+## Set global options
+
+```{r style, results="asis", cache=FALSE, message = F, echo=FALSE}
+# Set knit global options
+library("knitr")
+options(digits = 2, width = 80)
+golden_ratio <- (1 + sqrt(5)) / 2
+opts_chunk$set(echo = TRUE,
+               tidy = FALSE,
+               include = TRUE,
+               fig.path = params$FIGPATH,
+               dev=c("png",'pdf'),
+               fig.height = 5,
+               fig.width = 4 * golden_ratio,
+               comment = '  ',
+               dpi = 300,
+               cache = FALSE)
+  
+
+# Pretty outputs
+library("rmarkdown")
+library("BiocStyle")
+library("ggthemes") # add ggplot2 themes
+library("ggplot2")
+library("ggpubr")
+
+# Set seed for reproducibility
+set.seed(100)
+
+# Set plotting theme
+theme_set(theme_few(base_size = 14))
+
+# Set output directory
+d.out <- params$d.out
+rm(params)
+```
+
+
+## Load libraries for the session
+```{r libraries, message=FALSE}
+library("magrittr")
+library("ggplot2")
+library("tidyverse")
+library("readxl")
+library("dada2")
+library("phyloseq")
+library("gridExtra")
+library("vegan")
+library("plyr")
+library("scales")
+library("reshape2")
+library("DESeq2")
+library("dplyr") #for data manipulation
+library("msa") #multiple sequence alignment
+library("ape") #to create phylogenetic tree
+library("randomForest") 
+library("caret") 
+library("broom")
+library("mlbench")
+library("plotROC")
+library("gg3D")
+library("scatterplot3d")
+library("car")
+library("rgl")
+library("rglwidget")
+
+```
+
+# Import files
+
+Phyloseq object AD filtered samples
+
+```{r}
+# Phyloseq object AD filtered samples
+d.ps.filter.ad.st <- "/home/alba/Desktop/Alba/Practice/AD/AD.update.jan.2022/4.filter"
+ps.filter.ad.st <- "/ps.filter.ad.stool.prevalence.rds" %>%
+  paste0(d.ps.filter.ad.st,"/", .) %>% 
+  readRDS() 
+ps.filter.ad.st
+
+ps.st <- ps.filter.ad.st
+
+```
+
+
+## Edit
+
+Subset Group = c("Controls", "Disease", "Risiko")
+
+```{r, results= 'hide'}
+nrow(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Controls"])
+nrow(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Disease"])
+nrow(sample_data(ps.st)[sample_data(ps.st)$Group %in% "Risiko"])
+```
+
+```{r}
+#add one column for category
+sample_data(ps.st)$Group <- as.character(sample_data(ps.st)$Group)
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "AD"] <- "AD"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Disease" & sample_data(ps.st)$Diagnose == "MCI"] <- "MCI"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Risiko" ] <- "Risiko"
+sample_data(ps.st)$Status[sample_data(ps.st)$Group == "Controls" ] <- "HC"
+sample_data(ps.st)$Group[sample_data(ps.st)$Group == "Controls" ] <- "HC"
+
+```
+
+```{r}
+ps.dc <- subset_samples(ps.st, Group %in% c("Disease", "HC", "Risiko"))
+ps.dc
+
+sam <- data.frame(sample_data(ps.dc))
+
+```
+
+```{r}
+##do clr trannsformation and then run lm
+
+library("compositions")
+
+xt <- microbiome::transform(ps.dc, 'clr')
+```
+
+```{r}
+d1 <- data.frame(otu_table(ps.dc))
+
+d2 <- data.frame(otu_table(xt))
+```
+
+```{r}
+
+#ps1 <- psmelt(ps.dc)
+
+ps1 <- psmelt(xt)
+```
+
+```{r}
+ps2 <- ps1[(ps1$Status %in% c("AD", "MCI")),c("OTU", "Sample", "Abundance", "Status", "Liquor.phospho.Tau..pg.ml.", "Liquor.amyloid1.42.absolute..ß.amyloid.1.42...pg.ml.", "Kingdom", "Phylum","Family", "Genus", "Species", "Alter", "Geschlecht")]
+
+ps3 <- na.omit(ps2)
+colnames(ps3)[5] <- "ptau"
+colnames(ps3)[6] <- "Amyloidß42"
+
+ps3$ptau <- as.numeric(as.character(ps3$ptau))
+ps3$Amyloidß42 <- as.numeric(as.character(ps3$Amyloidß42))
+
+ps3$Alter <- as.numeric(as.character(ps3$Alter))
+ps3$Geschlecht <- as.numeric(as.character(ps3$Geschlecht))
+```
+
+```{r}
+##calculate ration ptau/amyloid
+
+ps3$`ptau/Aß42` <- ps3$ptau/ps3$Amyloidß42
+```
+
+```{r}
+d <- aggregate(ps3$Abundance, list(ps3$OTU), sum)
+
+#d1 <- d[(d$x > 100), ]
+
+```
+
+```{r}
+ps4 <- ps3[(ps3$OTU %in% d$Group.1), ]
+```
+
+
+##correlation of difference abundance vs difference food
+
+```{r}
+library("lme4")
+library("lmerTest")
+library("jmuOutlier")
+library("optimx")
+fail <- list()
+warn <- list()
+taxa_all <- unique(ps4$OTU)
+data_out <- data.frame()
+
+
+out=NULL
+counter=0
+for (tax in taxa_all){
+  counter <- counter +1
+  
+  #covariate matrix
+  Y <- ps4[(ps4$OTU %in% tax), ]
+  
+  tryCatch({
+    
+    
+    simple.fit = lm(Abundance ~ `ptau/Aß42` + Alter + Geschlecht, 
+                      data = Y)
+                    
+    
+    
+    res <- data.frame((summary(simple.fit)$coef))
+    res$Genomes <- tax
+    res$Covariate <- rownames(res)
+    res1 <- res[!(res$Covariate %in% "(Intercept)"), ]
+    
+    out=rbind(out,res1)
+    
+
+},error = function(c) { 
+      print(c$message)
+      fail[tax] <<- 2},
+   warning = function(w){
+     print(w$message)
+     warn[tax] <<- 1
+     })
+}
+```
+
+
+```{r}
+out1 <- na.omit(out)
+
+```
+
+```{r}
+ps9 <- ps4[, c("OTU", "Kingdom","Phylum", "Family", "Genus", "Species")]
+ps10 <- ps9[!duplicated(ps9), ]
+```
+
+```{r}
+colnames(ps10)[1] <- "Genomes"
+
+out2 <- merge(out1, ps10, by="Genomes")
+```
+
+## Distribution of p values
+```{r, warning=FALSE}
+
+hist(out2$Pr...t.., main="P-values",xlab="Treat") 
+
+```
+
+```{r}
+
+out2$P.adj.fdr <- p.adjust(out2$Pr...t..,"fdr")
+
+#out2 <- out[(out$P.adj.fdr < 0.06), ]
+```
+
+
+```{r}
+
+out2$Measure <- "ptau/Aß42"
+library("rio")
+
+export(out2, "ad.mci.lm.ptau.A42.xlsx")
+
+```
+
+# Session info
+
